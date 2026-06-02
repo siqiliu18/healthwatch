@@ -1,2 +1,3 @@
 k8s/secret.yaml
 .env
+bin/

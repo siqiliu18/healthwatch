@@ -24,6 +24,7 @@ func NewServer(s store.Store) http.Handler {
 		r.Get("/", h.ListChecks)
 		r.Get("/{id}", h.GetCheck)
 		r.Delete("/{id}", h.DeleteCheck)
+		r.Post("/{id}/try", h.TryCheck)
 	})
 
 	return r

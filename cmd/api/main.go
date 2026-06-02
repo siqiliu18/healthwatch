@@ -6,14 +6,18 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/siqiliu18/healthwatch/internal/api"
 	"github.com/siqiliu18/healthwatch/internal/store"
+	"github.com/siqiliu18/healthwatch/internal/worker"
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
 
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
@@ -26,8 +30,19 @@ func main() {
 	}
 	defer pool.Close()
 
-	s := store.NewPostgresStore(pool)
-	srv := api.NewServer(s)
+	checkFreq := 30 * time.Second
+	if v := os.Getenv("CHECK_FREQUENCY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			checkFreq = d
+		}
+	}
+
+	ps := store.NewPostgresStore(pool)
+
+	sched := worker.NewScheduler(ps, checkFreq)
+	go sched.Run(ctx)
+
+	srv := api.NewServer(ps)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -41,8 +56,15 @@ func main() {
 		WriteTimeout: 10 * time.Second,
 	}
 
+	go func() {
+		<-ctx.Done()
+		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = server.Shutdown(shutCtx)
+	}()
+
 	log.Printf("API server listening on :%s", port)
-	if err := server.ListenAndServe(); err != nil {
+	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
 }
