@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/siqiliu18/healthwatch/internal/store"
 )
@@ -18,6 +19,7 @@ func NewServer(s store.Store, cache store.Cache) http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/metrics/queue-depth", h.QueueDepth)
 
 	r.Route("/checks", func(r chi.Router) {

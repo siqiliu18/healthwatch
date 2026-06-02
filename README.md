@@ -122,6 +122,36 @@ Phase 3 is done when:
 - All four pods are Running: api, postgres, redis, worker (×2)
 - KEDA ScaledObject is created without error (`kubectl get scaledobject`)
 
+## Testing Phase 4 — Prometheus metrics + load generator
+
+For a snappier demo, temporarily lower the scheduler tick in the configmap:
+```bash
+# edit k8s/configmap.yaml: CHECK_FREQUENCY: "10s"
+kubectl apply -f k8s/configmap.yaml
+kubectl rollout restart deployment/healthwatch-api
+```
+
+Rebuild the API image (Prometheus endpoint added), then run the loadgen:
+```bash
+CGO_ENABLED=0 GOOS=linux go build -o bin/service ./cmd/api
+docker build -t healthwatch-api:latest .
+kubectl rollout restart deployment/healthwatch-api
+
+# In one terminal — watch pods scale
+kubectl get pods -w
+
+# In another terminal — port-forward and run loadgen
+kubectl port-forward svc/healthwatch-api 8080:80
+go run ./cmd/loadgen -n 200
+
+# Verify Prometheus metrics endpoint
+curl localhost:8080/metrics | grep healthwatch_queue_pending
+```
+
+Phase 4 is done when:
+- `GET /metrics` returns Prometheus text including `healthwatch_queue_pending`
+- Running `go run ./cmd/loadgen -n 200` floods the queue, KEDA scales workers up, then the loadgen reports "queue drained"
+
 ## API
 
 | Method | Path | Description |
@@ -132,6 +162,7 @@ Phase 3 is done when:
 | `DELETE` | `/checks/:id` | Unregister a URL |
 | `POST` | `/checks/:id/try` | Trigger an immediate check |
 | `GET` | `/metrics/queue-depth` | Pending job count (polled by KEDA) |
+| `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/healthz` | Liveness probe |
 
 ## Heritage

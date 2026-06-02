@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/siqiliu18/healthwatch/internal/metrics"
 	"github.com/siqiliu18/healthwatch/internal/model"
 	"github.com/siqiliu18/healthwatch/internal/store"
 )
@@ -145,6 +146,7 @@ func (h *Handler) QueueDepth(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal error")
 		return
 	}
+	metrics.QueueDepth.Set(float64(n))
 	writeJSON(w, http.StatusOK, map[string]any{"pending": n})
 }
 
