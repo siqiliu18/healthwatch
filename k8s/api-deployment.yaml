@@ -27,6 +27,11 @@ spec:
                 configMapKeyRef:
                   name: healthwatch-config
                   key: PORT
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: healthwatch-config
+                  key: REDIS_ADDR
           ports:
             - containerPort: 8080
           readinessProbe:

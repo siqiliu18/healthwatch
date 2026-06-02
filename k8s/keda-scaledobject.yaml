@@ -1,0 +1,16 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker-scaledobject
+spec:
+  scaleTargetRef:
+    name: healthwatch-worker
+  minReplicaCount: 2
+  maxReplicaCount: 20
+  cooldownPeriod: 60
+  triggers:
+    - type: metrics-api
+      metadata:
+        targetValue: "50"
+        url: "http://healthwatch-api/metrics/queue-depth"
+        valueLocation: "pending"

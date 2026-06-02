@@ -9,8 +9,8 @@ import (
 	"github.com/siqiliu18/healthwatch/internal/store"
 )
 
-func NewServer(s store.Store) http.Handler {
-	h := &Handler{store: s}
+func NewServer(s store.Store, cache store.Cache) http.Handler {
+	h := &Handler{store: s, cache: cache}
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
@@ -18,6 +18,7 @@ func NewServer(s store.Store) http.Handler {
 	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	r.Get("/metrics/queue-depth", h.QueueDepth)
 
 	r.Route("/checks", func(r chi.Router) {
 		r.Post("/", h.RegisterCheck)

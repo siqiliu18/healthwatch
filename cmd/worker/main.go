@@ -43,7 +43,17 @@ func main() {
 	defer pool.Close()
 
 	ps := store.NewPostgresStore(pool)
-	w := worker.NewWorker(ps, pingTimeout, concurrency)
+
+	var cache store.Cache
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rc := store.NewRedisCache(addr)
+		defer rc.Close()
+		cache = rc
+	} else {
+		log.Println("REDIS_ADDR not set, running without cache")
+	}
+
+	w := worker.NewWorker(ps, cache, pingTimeout, concurrency)
 
 	log.Printf("worker starting (concurrency=%d, pingTimeout=%s)", concurrency, pingTimeout)
 	w.Run(ctx)

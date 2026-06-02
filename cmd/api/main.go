@@ -39,10 +39,19 @@ func main() {
 
 	ps := store.NewPostgresStore(pool)
 
+	var cache store.Cache
+	if addr := os.Getenv("REDIS_ADDR"); addr != "" {
+		rc := store.NewRedisCache(addr)
+		defer rc.Close()
+		cache = rc
+	} else {
+		log.Println("REDIS_ADDR not set, running without cache")
+	}
+
 	sched := worker.NewScheduler(ps, checkFreq)
 	go sched.Run(ctx)
 
-	srv := api.NewServer(ps)
+	srv := api.NewServer(ps, cache)
 
 	port := os.Getenv("PORT")
 	if port == "" {

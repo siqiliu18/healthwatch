@@ -9,11 +9,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
+	"github.com/siqiliu18/healthwatch/internal/model"
 	"github.com/siqiliu18/healthwatch/internal/store"
 )
 
 type Handler struct {
 	store store.Store
+	cache store.Cache // nil if Redis is not configured
 }
 
 func (h *Handler) RegisterCheck(w http.ResponseWriter, r *http.Request) {
@@ -51,10 +53,19 @@ func (h *Handler) GetCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := h.store.GetLatestResult(r.Context(), id)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusInternalServerError, "internal error")
-		return
+	var result *model.CheckResult
+	if h.cache != nil {
+		result, err = h.cache.GetLatestResult(r.Context(), id)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			result = nil // non-fatal: fall through to Postgres
+		}
+	}
+	if result == nil {
+		result, err = h.store.GetLatestResult(r.Context(), id)
+		if err != nil && !errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusInternalServerError, "internal error")
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -126,6 +137,15 @@ func (h *Handler) TryCheck(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h *Handler) QueueDepth(w http.ResponseWriter, r *http.Request) {
+	n, err := h.store.PendingJobCount(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal error")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pending": n})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

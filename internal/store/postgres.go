@@ -35,6 +35,7 @@ type Store interface {
 	DeleteCheck(ctx context.Context, id uuid.UUID) error
 	ListChecks(ctx context.Context, limit, offset int) ([]*model.Check, error)
 	EnqueueJob(ctx context.Context, checkID uuid.UUID) error
+	PendingJobCount(ctx context.Context) (int, error)
 }
 
 // SchedulerStore is the subset of PostgresStore used by the scheduler goroutine.
@@ -46,7 +47,7 @@ type SchedulerStore interface {
 // WorkerStore is the subset of PostgresStore used by worker poll loops.
 type WorkerStore interface {
 	ClaimJob(ctx context.Context) (*ClaimedJob, error)
-	CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result CheckResultInput) error
+	CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result CheckResultInput) (*model.CheckResult, error)
 	ReapStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
@@ -217,10 +218,10 @@ func (s *PostgresStore) ClaimJob(ctx context.Context) (*ClaimedJob, error) {
 	return &j, nil
 }
 
-func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result CheckResultInput) error {
+func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result CheckResultInput) (*model.CheckResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
@@ -228,18 +229,30 @@ func (s *PostgresStore) CompleteJob(ctx context.Context, jobID, checkID uuid.UUI
 		`UPDATE check_jobs SET status = 'done', done_at = now() WHERE id = $1`,
 		jobID,
 	); err != nil {
-		return fmt.Errorf("update job: %w", err)
+		return nil, fmt.Errorf("update job: %w", err)
 	}
 
-	if _, err = tx.Exec(ctx,
+	var r model.CheckResult
+	err = tx.QueryRow(ctx,
 		`INSERT INTO check_results (check_id, job_id, status_code, status_text, duration_ms, error)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, check_id, job_id, status_code, status_text, duration_ms, error, checked_at`,
 		checkID, jobID, result.StatusCode, result.StatusText, result.DurationMs, result.Error,
-	); err != nil {
-		return fmt.Errorf("insert result: %w", err)
+	).Scan(&r.ID, &r.CheckID, &r.JobID, &r.StatusCode, &r.StatusText, &r.DurationMs, &r.Error, &r.CheckedAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert result: %w", err)
 	}
 
-	return tx.Commit(ctx)
+	return &r, tx.Commit(ctx)
+}
+
+func (s *PostgresStore) PendingJobCount(ctx context.Context) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM check_jobs WHERE status = 'pending'`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("pending job count: %w", err)
+	}
+	return count, nil
 }
 
 func (s *PostgresStore) ReapStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error) {

@@ -8,23 +8,25 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/siqiliu18/healthwatch/internal/model"
 	"github.com/siqiliu18/healthwatch/internal/store"
 )
 
 type WorkerStore interface {
 	ClaimJob(ctx context.Context) (*store.ClaimedJob, error)
-	CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result store.CheckResultInput) error
+	CompleteJob(ctx context.Context, jobID, checkID uuid.UUID, result store.CheckResultInput) (*model.CheckResult, error)
 	ReapStaleJobs(ctx context.Context, olderThan time.Duration) (int64, error)
 }
 
 type Worker struct {
 	store       WorkerStore
+	cache       store.Cache // nil if Redis is not configured
 	pingTimeout time.Duration
 	concurrency int
 }
 
-func NewWorker(store WorkerStore, pingTimeout time.Duration, concurrency int) *Worker {
-	return &Worker{store: store, pingTimeout: pingTimeout, concurrency: concurrency}
+func NewWorker(s WorkerStore, cache store.Cache, pingTimeout time.Duration, concurrency int) *Worker {
+	return &Worker{store: s, cache: cache, pingTimeout: pingTimeout, concurrency: concurrency}
 }
 
 func (w *Worker) Run(ctx context.Context) {
@@ -66,8 +68,17 @@ func (w *Worker) processOne(ctx context.Context) error {
 		}
 		return nil
 	}
-	result := ping(ctx, job.Endpoint, w.pingTimeout)
-	return w.store.CompleteJob(ctx, job.JobID, job.CheckID, result)
+	pingResult := ping(ctx, job.Endpoint, w.pingTimeout)
+	saved, err := w.store.CompleteJob(ctx, job.JobID, job.CheckID, pingResult)
+	if err != nil {
+		return err
+	}
+	if w.cache != nil {
+		if err := w.cache.SetLatestResult(ctx, job.CheckID, saved); err != nil {
+			log.Printf("worker: cache set: %v", err)
+		}
+	}
+	return nil
 }
 
 func (w *Worker) runReaper(ctx context.Context) {

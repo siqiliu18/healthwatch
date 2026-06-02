@@ -27,3 +27,8 @@ spec:
                 configMapKeyRef:
                   name: healthwatch-config
                   key: PING_TIMEOUT
+            - name: REDIS_ADDR
+              valueFrom:
+                configMapKeyRef:
+                  name: healthwatch-config
+                  key: REDIS_ADDR
