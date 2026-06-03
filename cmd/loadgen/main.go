@@ -15,6 +15,7 @@ import (
 func main() {
 	api := flag.String("api", "http://localhost:8080", "API base URL")
 	n := flag.Int("n", 200, "number of URLs to register")
+	urlPattern := flag.String("url", "https://example.com/?id=%d", "URL pattern for generated checks (%%d replaced with index)")
 	flag.Parse()
 
 	log.Printf("registering %d URLs against %s", *n, *api)
@@ -30,7 +31,7 @@ func main() {
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			endpoint := fmt.Sprintf("https://example.com/?id=%d", i)
+			endpoint := fmt.Sprintf(*urlPattern, i)
 			if err := register(*api, endpoint); err != nil {
 				log.Printf("register %d: %v", i, err)
 				return

@@ -7,10 +7,9 @@ spec:
     name: healthwatch-worker
   minReplicaCount: 2
   maxReplicaCount: 20
-  cooldownPeriod: 60
   triggers:
     - type: metrics-api
       metadata:
         targetValue: "50"
-        url: "http://healthwatch-api/metrics/queue-depth"
+        url: "http://healthwatch-api.default.svc.cluster.local/metrics/queue-depth"
         valueLocation: "pending"

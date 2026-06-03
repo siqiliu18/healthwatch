@@ -4,7 +4,7 @@ metadata:
   name: healthwatch-config
 data:
   PORT: "8080"
-  CHECK_FREQUENCY: "30s"
+  CHECK_FREQUENCY: "10s"
   PING_TIMEOUT: "5s"
   REDIS_ADDR: "healthwatch-redis:6379"
 ---
