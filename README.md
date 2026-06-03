@@ -1,15 +1,111 @@
 # HealthWatch
 
+![CI](https://github.com/siqiliu18/healthwatch/actions/workflows/ci.yml/badge.svg)
+
 Distributed URL health checker demonstrating Kubernetes autoscaling via KEDA.
 Worker pods scale based on job queue depth — not CPU.
 
 > See [docs/design.md](docs/design.md) for architecture, schema, and development phases.
 
+## Demo
+
+Workers scale from 2 → 20 replicas as the job queue floods, then drain back down.
+
+<video src="https://github.com/user-attachments/assets/2a1d4bd9-5cb2-4edb-84dd-649349eae308" controls width="100%"></video>
+
 ## Stack
 
 Go · Kubernetes · KEDA · PostgreSQL · Redis · GKE
 
-## Building Images (Rancher Desktop — dockerd mode)
+## GKE Deployment
+
+### One-time setup
+
+```bash
+# Authenticate and set project
+gcloud auth login
+gcloud config set project healthwatch-siqi-2026
+
+# Enable APIs
+gcloud services enable container.googleapis.com artifactregistry.googleapis.com
+
+# Create cluster and registry
+gcloud container clusters create healthwatch \
+  --zone us-central1-a \
+  --num-nodes 3 \
+  --machine-type e2-standard-2 \
+  --disk-size 20
+
+gcloud artifacts repositories create healthwatch \
+  --repository-format docker \
+  --location us-central1
+
+# Install KEDA
+helm repo add kedacore https://kedacore.github.io/charts && helm repo update
+helm install keda kedacore/keda --namespace keda --create-namespace
+```
+
+### Build and push images (Apple Silicon → amd64 for GKE)
+
+```bash
+gcloud auth configure-docker us-central1-docker.pkg.dev
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/service ./cmd/api
+docker build -t us-central1-docker.pkg.dev/healthwatch-siqi-2026/healthwatch/api:latest .
+docker push us-central1-docker.pkg.dev/healthwatch-siqi-2026/healthwatch/api:latest
+
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/service ./cmd/worker
+docker build -t us-central1-docker.pkg.dev/healthwatch-siqi-2026/healthwatch/worker:latest .
+docker push us-central1-docker.pkg.dev/healthwatch-siqi-2026/healthwatch/worker:latest
+```
+
+### Deploy
+
+```bash
+gcloud container clusters get-credentials healthwatch --zone us-central1-a
+
+kubectl apply -f k8s/secret.yaml        # copy from k8s/secret.example.yaml first
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/postgres-statefulset.yaml
+kubectl apply -f k8s/redis-statefulset.yaml
+kubectl apply -f k8s/keda-scaledobject.yaml
+kubectl apply -f k8s/gke/
+kubectl get pods -w
+```
+
+### Run the autoscaling demo
+
+```bash
+# Terminal 1 — watch workers scale
+watch -n2 kubectl get pods
+
+# Terminal 2 — flood the queue (1s-delay endpoints give KEDA time to react)
+go run ./cmd/loadgen \
+  -n 500 \
+  -api http://<EXTERNAL-IP> \
+  -url 'https://httpbin.org/delay/1?id=%d'
+```
+
+Get the external IP with: `kubectl get svc healthwatch-api`
+
+### Reset between demo runs
+
+```bash
+kubectl scale deployment/healthwatch-api --replicas=0
+kubectl scale deployment/healthwatch-worker --replicas=2
+# wait ~10s, then:
+kubectl scale deployment/healthwatch-api --replicas=1
+# queue auto-fills from registered URLs on next scheduler tick (~10s)
+```
+
+### Teardown (stop GKE billing)
+
+```bash
+gcloud container clusters delete healthwatch --zone us-central1-a
+gcloud artifacts repositories delete healthwatch --location us-central1
+```
+
+## Local Development (Rancher Desktop — dockerd mode)
 
 Rancher Desktop runs k3s with Docker as the container runtime, so images built with
 `docker build` are directly visible to k8s — no `nerdctl load` needed.
@@ -29,128 +125,39 @@ docker build -t healthwatch-worker:latest .
 
 > Apple Silicon: add `GOARCH=arm64`. Intel: add `GOARCH=amd64`.
 
-## Prerequisites (one-time cluster setup)
+### Prerequisites (one-time cluster setup)
 
-**KEDA** must be installed before applying `k8s/keda-scaledobject.yaml`.
-KEDA pulls from `ghcr.io` (not Docker Hub), so it works even when Docker Hub times out:
+**KEDA** must be installed before applying `k8s/keda-scaledobject.yaml`:
 
 ```bash
 helm repo add kedacore https://kedacore.github.io/charts
 helm repo update
 helm install keda kedacore/keda --namespace keda --create-namespace
-kubectl get pods -n keda -w   # wait until keda pods are Running
+kubectl get pods -n keda -w
 ```
 
-**Redis image** must be pulled before deploying (Docker Hub connectivity required once):
+**Redis image** must be pulled before deploying:
 
 ```bash
 docker pull redis:7-alpine
 ```
 
-## Deploy / Teardown
+### Deploy / Teardown
 
 ```bash
 # First time: create secret (gitignored)
 cp k8s/secret.example.yaml k8s/secret.yaml
-# edit k8s/secret.yaml with real DATABASE_URL
 kubectl apply -f k8s/secret.yaml
 
 # Switch to Rancher Desktop context if needed
 kubectl config use-context rancher-desktop
 
-# Deploy everything
 kubectl apply -f k8s/
 kubectl get pods -w
 
 # Teardown (secret survives — reapply it next time)
 kubectl delete -f k8s/
 ```
-
-## Testing Phase 1 — Core API + PostgreSQL
-
-```bash
-kubectl port-forward svc/healthwatch-api 8080:80
-
-# Register a URL
-curl -X POST localhost:8080/checks \
-  -H 'Content-Type: application/json' \
-  -d '{"endpoint":"https://example.com"}'
-
-# List all registered URLs
-curl localhost:8080/checks
-```
-
-Phase 1 is done when the POST returns a JSON object with an `id`.
-
-## Testing Phase 2 — Worker + SKIP LOCKED queue
-
-```bash
-kubectl port-forward svc/healthwatch-api 8080:80
-
-# Register a URL
-curl -X POST localhost:8080/checks \
-  -H 'Content-Type: application/json' \
-  -d '{"endpoint":"https://example.com"}'
-# note the returned id
-
-# Wait ~5 seconds for the worker to pick up and complete the job, then:
-curl localhost:8080/checks/<id>
-```
-
-Phase 2 is done when `latest_result` is populated with a real `status_code` and
-`duration_ms` — confirming the worker claimed the job, pinged the URL, and wrote the
-result.
-
-## Testing Phase 3 — Redis cache + KEDA autoscaling
-
-```bash
-kubectl port-forward svc/healthwatch-api 8080:80
-
-# Verify the metrics endpoint KEDA polls
-curl localhost:8080/metrics/queue-depth
-# → {"pending":0}  (0 is correct when the queue is drained)
-
-# Register a URL and fetch its result — second call is served from Redis cache
-curl -X POST localhost:8080/checks \
-  -H 'Content-Type: application/json' \
-  -d '{"endpoint":"https://example.com"}'
-curl localhost:8080/checks/<id>
-```
-
-Phase 3 is done when:
-- `GET /metrics/queue-depth` returns `{"pending": N}`
-- All four pods are Running: api, postgres, redis, worker (×2)
-- KEDA ScaledObject is created without error (`kubectl get scaledobject`)
-
-## Testing Phase 4 — Prometheus metrics + load generator
-
-For a snappier demo, temporarily lower the scheduler tick in the configmap:
-```bash
-# edit k8s/configmap.yaml: CHECK_FREQUENCY: "10s"
-kubectl apply -f k8s/configmap.yaml
-kubectl rollout restart deployment/healthwatch-api
-```
-
-Rebuild the API image (Prometheus endpoint added), then run the loadgen:
-```bash
-CGO_ENABLED=0 GOOS=linux go build -o bin/service ./cmd/api
-docker build -t healthwatch-api:latest .
-kubectl rollout restart deployment/healthwatch-api
-
-# In one terminal — watch pods scale
-kubectl get pods -w
-
-# In another terminal — port-forward and run loadgen
-kubectl port-forward svc/healthwatch-api 8080:80
-go run ./cmd/loadgen -n 200
-
-# Verify Prometheus metrics endpoint
-curl localhost:8080/metrics | grep healthwatch_queue_pending
-```
-
-Phase 4 is done when:
-- `GET /metrics` returns Prometheus text including `healthwatch_queue_pending`
-- Running `go run ./cmd/loadgen -n 200` floods the queue, KEDA scales workers up, then the loadgen reports "queue drained"
 
 ## API
 
