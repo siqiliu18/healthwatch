@@ -172,6 +172,3 @@ kubectl delete -f k8s/
 | `GET` | `/metrics` | Prometheus metrics |
 | `GET` | `/healthz` | Liveness probe |
 
-## Heritage
-
-Evolved from the [blizzard](../blizzard/) take-home — a single-binary health checker whose architectural limits (shared file state, goroutine-per-URL) made it unscalable across multiple instances. HealthWatch closes every one of those gaps.
